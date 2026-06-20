@@ -11,9 +11,8 @@ Usage (via cli):
 Arguments after "--" are parsed by this script:
   --input_pmx       Path to the .pmx file to convert
   --output_glb      Path where the .glb file will be written
-  --sphere_mode     NONE | AUTO | ALL  (default: NONE)
-  --force_double_sided  (flag)
-  --ambient_strength    float (default: 0.0)
+  --scale           float, PMX import scale (default: 0.085)
+  --apply-transforms  (flag) bake transforms into mesh before export
 """
 
 import bpy
@@ -34,9 +33,8 @@ def parse_args(argv):
     args = {
         "input_pmx": None,
         "output_glb": None,
-        "sphere_mode": "NONE",
-        "force_double_sided": False,
-        "ambient_strength": 0.0,
+        "apply_transforms": False,
+        "scale": 0.085,
     }
 
     # Find the '--' separator
@@ -54,14 +52,11 @@ def parse_args(argv):
         elif raw[i] == "--output_glb":
             args["output_glb"] = raw[i + 1]
             i += 2
-        elif raw[i] == "--sphere_mode":
-            args["sphere_mode"] = raw[i + 1]
-            i += 2
-        elif raw[i] == "--force_double_sided":
-            args["force_double_sided"] = True
+        elif raw[i] == "--apply-transforms":
+            args["apply_transforms"] = True
             i += 1
-        elif raw[i] == "--ambient_strength":
-            args["ambient_strength"] = float(raw[i + 1])
+        elif raw[i] == "--scale":
+            args["scale"] = float(raw[i + 1])
             i += 2
         else:
             i += 1
@@ -128,9 +123,9 @@ def install_and_enable_addon():
 # Conversion steps
 # ============================================================
 
-def import_pmx(pmx_path):
+def import_pmx(pmx_path, scale=0.085):
     """Import the PMX model into the scene."""
-    log(f"Importing {pmx_path} ...")
+    log(f"Importing {pmx_path} (scale={scale}) ...")
 
     # Clear default scene
     bpy.ops.object.select_all(action="SELECT")
@@ -139,7 +134,7 @@ def import_pmx(pmx_path):
     bpy.ops.mmd_tools.import_model(
         filepath=pmx_path,
         types={"MESH", "ARMATURE", "PHYSICS", "DISPLAY", "MORPHS"},
-        scale=1.0,
+        scale=scale,
     )
     log("Import done.")
 
@@ -162,7 +157,7 @@ def rename_bones():
     log("Bone rename done.")
 
 
-def export_glb(output_path, export_animations=True, export_morphs=True, apply_transforms=True):
+def export_glb(output_path, export_animations=True, export_morphs=True, apply_transforms=False):
     """Export as GLB."""
     log(f"Exporting to {output_path} ...")
     bpy.ops.mmd.export_gltf(
@@ -200,20 +195,16 @@ def main():
         sys.exit(1)
 
     # Step 1: Import PMX
-    import_pmx(input_pmx)
+    import_pmx(input_pmx, scale=args["scale"])
 
     # Step 2: Convert materials
-    convert_materials(
-        sphere_mode=args["sphere_mode"],
-        force_double_sided=args["force_double_sided"],
-        ambient_strength=args["ambient_strength"],
-    )
+    convert_materials()
 
     # Step 3: Rename bones
     rename_bones()
 
     # Step 4: Export as GLB
-    export_glb(output_glb)
+    export_glb(output_glb, apply_transforms=args["apply_transforms"])
 
     log("=== Conversion complete ===")
 

@@ -13,14 +13,13 @@ from ._materials import (
     _get_model_search_dirs,
 )
 
-# export_apply を True にするとエクスポート時にトランスフォーム（回転・スケール）と
-# モディファイアが適用され、面の向きが正しく出力される（裏返り防止）。
-# MMDモデルは未適用の回転・スケールを持つことが多く、False だと裏返りが起きるため
-# True をデフォルトとする。
+# export_apply を False とすることで元のトランスフォーム（回転・スケール）を
+# そのまま維持する。True にするとモデル初期のスケールがメッシュに焼き込まれ、
+# デフォルトの拡大率が失われるため False をデフォルトとする。
 _GLTF_EXPORT_PARAMS = {
     "export_format": "GLB",
     "use_visible": True,
-    "export_apply": True,
+    "export_apply": False,
     "export_yup": True,
     "export_texcoords": True,
     "export_normals": True,
@@ -32,7 +31,7 @@ _GLTF_EXPORT_PARAMS = {
 _GLTF_EXPORT_PARAMS_FALLBACK = {
     "export_format": "GLB",
     "use_visible": True,
-    "export_apply": True,
+    "export_apply": False,
     "export_yup": True,
     "export_materials": "EXPORT",
     "export_skins": True,
@@ -108,8 +107,9 @@ class MMD_OT_ExportGLTF(Operator, ExportHelper):
     apply_transforms: BoolProperty(
         name="トランスフォーム/モディファイアを適用",
         description="エクスポート時に回転・スケール・モディファイアを適用する。"
-                    "面の裏返りを防ぐため通常はオン。スキン変形に問題が出る場合はオフにする",
-        default=True,
+                    "モデルのデフォルトの拡大率を維持するため通常はオフ。"
+                    "面の裏返りが起きる場合はオンにする",
+        default=False,
     )
 
     def draw(self, context):

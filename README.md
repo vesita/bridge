@@ -5,11 +5,14 @@
 ## 快速开始
 
 ```bash
-# 转换所有模型
-uv run python build.py
+# 转换所有模型（默认 scale=0.085，厘米→米转换）
+uv run python main.py
 
 # 转换指定模型
-uv run python build.py 模型目录名
+uv run python main.py 模型目录名
+
+# 调整导入缩放
+uv run python main.py --scale 0.01
 ```
 
 ## 环境要求
@@ -21,18 +24,26 @@ uv run python build.py 模型目录名
 
 ```
 bridge/
-├── build.py                    # 构建脚本 — 扫描输入目录并调用 Blender 转换
-├── convert.py                  # Blender 转换脚本（在 Blender 内部执行）
-├── mmd_to_gltf_exporter.py     # Blender 插件 — 材质转换、骨骼重命名、GLB 导出
-├── pyproject.toml              # uv 项目配置
-├── uv.lock                     # 依赖锁文件
+├── main.py                      # ★ 唯一入口：uv run python main.py
+├── pyproject.toml               # uv 项目配置
+├── uv.lock                      # 依赖锁文件
+├── src/
+│   └── bridge/                  # Python 包
+│       ├── __init__.py          # 版本号 + PROJECT_ROOT 常量
+│       ├── __main__.py          # 支持 python -m bridge
+│       ├── cli.py               # CLI 构建调度（参数解析、发现模型、启动 Blender）
+│       ├── blender_runner.py    # Blender 驱动（在 Blender 内部执行转换流程）
+│       ├── addon.py             # Blender 插件入口（bl_info + 注册，可手动安装）
+│       ├── _materials.py        # 材质转换：MMD→Principled BSDF、球面贴图、ambient
+│       ├── _bones.py            # 骨骼重命名：日文→英文
+│       └── _export.py           # GLB 导出：参数、预/后处理、面板
 ├── data/
-│   ├── inputs/                 # 输入目录 — 把你的 .pmx 模型放这里
+│   ├── inputs/                  # 输入目录 — 把你的 .pmx 模型放这里
 │   │   └── 模型名/
 │   │       ├── model.pmx
 │   │       ├── texture1.png
 │   │       └── ...
-│   └── outputs/                # 输出目录 — 自动生成的 .glb 文件
+│   └── outputs/                 # 输出目录 — 自动生成的 .glb 文件
 │       └── 模型名/
 │           └── model.glb
 └── README.md
@@ -40,14 +51,27 @@ bridge/
 
 ## 详细用法
 
+### 3 种入口
+
+```bash
+# 方式一（推荐）：main.py
+uv run python main.py
+
+# 方式二：uv scripts 入口
+uv run bridge
+
+# 方式三：Python 模块
+uv run python -m bridge
+```
+
 ### 基本使用
 
 ```bash
 # 转换 data/inputs/ 下所有模型
-uv run python build.py
+uv run python main.py
 
 # 只转换特定模型
-uv run python build.py Melusine05_Mamere
+uv run python main.py Melusine05_Mamere
 ```
 
 ### 指定 Blender 路径
@@ -55,8 +79,8 @@ uv run python build.py Melusine05_Mamere
 工具会自动检测常见位置的 Blender，如果找不到或想用特定版本：
 
 ```bash
-uv run python build.py --blender /usr/local/blender/blender
-uv run python build.py -b /opt/blender-4.2/blender
+uv run python main.py --blender /usr/local/blender/blender
+uv run python main.py -b /opt/blender-4.2/blender
 ```
 
 ### 监听模式
@@ -64,57 +88,93 @@ uv run python build.py -b /opt/blender-4.2/blender
 监控输入目录，新增 PMX 文件时自动转换：
 
 ```bash
-uv run python build.py --watch
-uv run python build.py -w -i 5   # 每 5 秒检测一次（默认 10 秒）
+uv run python main.py --watch
 ```
 
-### 转换选项
+### 缩放控制
+
+MMD 模型以厘米为单位（1 unit ≈ 1 cm），而 glTF 以米为单位（1 unit = 1 meter），直接导出的模型在引擎里会放大 ~100 倍。
 
 ```bash
-# 控制球面贴图（Sphere Map）处理方式
-uv run python build.py --sphere-mode AUTO
+# 默认：0.085，150cm 的角色导出为 ~1.3m
+uv run python main.py
 
-# 调整环境色强度（0.0~1.0，让眉毛等部位更亮）
-uv run python build.py --ambient-strength 0.2
+# 真实的厘米→米转换
+uv run python main.py --scale 0.01
 
-# 强制双面渲染（解决法线翻转导致的透面问题）
-uv run python build.py --force-double-sided
-
-# 组合使用
-uv run python build.py 模型名 --sphere-mode NONE --ambient-strength 0.0
+# 保持 PMX 原始尺寸（150cm → 150m，适合不关心物理单位的情况）
+uv run python main.py --scale 1.0
 ```
 
-### `--sphere-mode` 说明
+### Blender 插件安装
 
-| 模式 | 效果 |
-|---|---|
-| `NONE`（默认） | 不使用球面贴图，最安全的 glTF 输出 |
-| `AUTO` | 仅眼球材质（名称含 eye/瞳/目 且底色偏白）自动应用 |
-| `ALL` | 所有材质都应用球面贴图（可能偏暗） |
+如果需要手动将插件安装到 Blender（例如在 Blender UI 中直接使用）：
+
+1. Blender → Edit → Preferences → Add-ons
+2. 点击 **Install…**，选择 `src/bridge/addon.py`
+3. 勾选 "MMD to glTF Exporter" 启用
+
+安装后在 3D 视口侧边栏（按 N 键）可以看到 **MMD Exporter** 标签页。
 
 ## 转换流程
 
-1. **导入 PMX** — 通过 mmd_tools 导入模型（网格、骨骼、表情）
-2. **材质转换** — 将 MMD 特有材质转为 Principled BSDF（PBR 标准材质）
-3. **骨骼重命名** — 日文骨骼名转英文（便于引擎识别）
-4. **导出 GLB** — 输出 glTF Binary 2.0 格式，含骨骼动画和形态键
+```text
+main.py → cli.py                                  [宿主 Python]
+           │
+           ├── 扫描 data/inputs/ 发现 .pmx 文件
+           │
+           └── 启动 blender --background --python blender_runner.py
+                      │
+                      ├─ Step 0: 加载 bridge.addon 插件
+                      ├─ Step 1: 通过 mmd_tools 导入 PMX
+                      ├─ Step 2: 材质转换 MMD → Principled BSDF (_materials.py)
+                      ├─ Step 3: 骨骼重命名 日文 → 英文 (_bones.py)
+                      └─ Step 4: 导出 GLB (_export.py)
+```
+
+## 内部模块说明
+
+| 模块 | 职责 | 运行环境 |
+| --- | --- | --- |
+| `cli.py` | CLI 参数解析、模型发现、Blender 进程调度 | 宿主 Python |
+| `blender_runner.py` | 在 Blender 内部编排导入→转换→导出流程 | Blender Python |
+| `addon.py` | 插件入口，仅 `bl_info` + 导入注册 | Blender Python |
+| `_materials.py` | MMD 材质检测、信息提取、PBR 节点树构建、球面贴图合成 | Blender Python |
+| `_bones.py` | 日文→英文骨骼名映射 + 重命名操作器 | Blender Python |
+| `_export.py` | GLB 导出参数、内部对象隐藏、SDEF 形态键静音 | Blender Python |
 
 ## 常见问题
 
 **Q: Blender 找不到？**
 ```bash
-uv run python build.py -b /实际路径/blender
+uv run python main.py -b /实际路径/blender
+```
+
+**Q: 模型导入引擎后发现缩放不对（太大或太小）？**
+
+这是因为 MMD 以厘米为单位，而 glTF 以米为单位。用 `--scale` 调整导入缩放：
+
+```bash
+# 默认 0.085 → 约 1.3m 高的角色
+uv run python main.py
+
+# 真实的厘米→米
+uv run python main.py --scale 0.01
+
+# 保留 PMX 原始数值
+uv run python main.py --scale 1.0
 ```
 
 **Q: 导出的模型在引擎里透面/反了？**
-```bash
-uv run python build.py --force-double-sided
-```
 
-**Q: 眉毛/眼睛颜色不对？**
+贴图方向问题通常是法线/切线数据兼容性导致的，尝试在 DCC 工具（Blender、Unity）里重新导入并调整法线设置。
+
+**Q: 想从命令行直接导出 GLB（不经过 main.py）？**
 ```bash
-# 尝试提高环境色强度
-uv run python build.py --ambient-strength 0.15 --sphere-mode AUTO
+blender --background --python src/bridge/blender_runner.py -- \
+  --input_pmx 模型.pmx \
+  --output_glb 输出.glb \
+  --scale 0.085
 ```
 
 ## 许可证

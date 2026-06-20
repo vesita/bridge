@@ -38,10 +38,7 @@ BLENDER_CANDIDATES = [
 ]
 
 # ── Conversion defaults ────────────────────────────────────────
-DEFAULT_SPHERE_MODE = "NONE"
-DEFAULT_AMBIENT = 0.0
-DEFAULT_DOUBLE_SIDED = False
-DEFAULT_APPLY_TRANSFORMS = True
+DEFAULT_SCALE = 0.085
 
 
 # ================================================================
@@ -94,10 +91,7 @@ def discover_pmx_models(subdir=None):
 
 
 def run_conversion(blender_path, pmx_path, output_glb, *,
-                   sphere_mode=DEFAULT_SPHERE_MODE,
-                   ambient_strength=DEFAULT_AMBIENT,
-                   force_double_sided=DEFAULT_DOUBLE_SIDED,
-                   apply_transforms=DEFAULT_APPLY_TRANSFORMS):
+                   scale=DEFAULT_SCALE):
     """Spawn Blender headless to convert one PMX → GLB."""
     cmd = [
         str(blender_path),
@@ -106,14 +100,8 @@ def run_conversion(blender_path, pmx_path, output_glb, *,
         "--",
         "--input_pmx", str(pmx_path),
         "--output_glb", str(output_glb),
-        "--sphere_mode", sphere_mode,
-        "--ambient_strength", str(ambient_strength),
+        "--scale", str(scale),
     ]
-
-    if force_double_sided:
-        cmd.append("--force_double_sided")
-    if not apply_transforms:
-        pass  # convert.py always applies transforms — extend if needed.
 
     print(f"  → blender {pmx_path.name} → {output_glb.name}")
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -160,9 +148,7 @@ def cmd_build(args):
         out_dir.mkdir(parents=True, exist_ok=True)
         ok = run_conversion(
             blender, pmx_path, out_glb,
-            sphere_mode=args.sphere_mode,
-            ambient_strength=args.ambient_strength,
-            force_double_sided=args.force_double_sided,
+            scale=args.scale,
         )
         if ok:
             success += 1
@@ -182,7 +168,7 @@ def cmd_watch(args):
         print("ERROR: Blender not found. Use --blender /path/to/blender to specify.")
         return 1
 
-    print(f"Watching {INPUTS_DIR} for new models (poll every {args.interval}s) ...")
+    print(f"Watching {INPUTS_DIR} for new models (poll every 10s) ...")
     print("Press Ctrl+C to stop.\n")
 
     seen = {p for _, p, _, _ in discover_pmx_models()}
@@ -200,12 +186,10 @@ def cmd_watch(args):
                     print(f"New model detected: {pmx_path}")
                     run_conversion(
                         blender, pmx_path, out_glb,
-                        sphere_mode=args.sphere_mode,
-                        ambient_strength=args.ambient_strength,
-                        force_double_sided=args.force_double_sided,
+                        scale=args.scale,
                     )
                 seen = current
-            time.sleep(args.interval)
+            time.sleep(10)
     except KeyboardInterrupt:
         print("\nWatch stopped.")
     return 0
@@ -241,26 +225,14 @@ def main():
         help="Path to Blender executable (auto-detected if omitted)",
     )
     parser.add_argument(
-        "--sphere-mode", choices=["NONE", "AUTO", "ALL"],
-        default=DEFAULT_SPHERE_MODE,
-        help="Sphere map handling (default: NONE)",
-    )
-    parser.add_argument(
-        "--ambient-strength", type=float, default=DEFAULT_AMBIENT,
-        help="Ambient color strength 0.0-1.0 (default: 0.0)",
-    )
-    parser.add_argument(
-        "--force-double-sided", action="store_true",
-        default=DEFAULT_DOUBLE_SIDED,
-        help="Force all materials double-sided",
+        "--scale", type=float, default=DEFAULT_SCALE,
+        help="PMX import scale factor. MMD uses cm (1 unit ≈ 1 cm), glTF uses "
+             "meters. Default 0.085 gives a typical character ~1.3m in glTF. "
+             "Use 1.0 for raw PMX size, 0.01 for true cm→m.",
     )
     parser.add_argument(
         "--watch", "-w", action="store_true",
         help="Watch mode: poll for new PMX files and convert automatically",
-    )
-    parser.add_argument(
-        "--interval", "-i", type=int, default=10,
-        help="Polling interval in seconds for watch mode (default: 10)",
     )
 
     args = parser.parse_args()
