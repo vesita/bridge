@@ -1,0 +1,15 @@
+[project]
+name = "bridge"
+version = "0.2.0"
+description = "MMD (PMX) → glTF auto-converter — scans data/inputs/ and outputs GLB to data/outputs/"
+requires-python = ">=3.10"
+dependencies = []
+
+[[project.authors]]
+name = "Custom"
+
+[project.scripts]
+bridge = "bridge.cli:main"
+
+[tool.uv]
+package = true
