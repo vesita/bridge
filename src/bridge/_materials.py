@@ -11,14 +11,15 @@ _BLENDER_VERSION = bpy.app.version
 
 IMAGE_CACHE = {}
 
-# ambient（環境色）をBase Colorに加算する際の既定の強さ（0.0〜1.0）。
-# 0 では加算なし（素直なテクスチャ色）。眉などをMMD寄りに明るくしたい場合のみ
-# Step1のスライダーで上げる。上げすぎると全体が白っぽくなる。
+# ambient（环境色）叠加到 Base Color 时的默认强度（0.0〜1.0）。
+# 0 表示不叠加（原始纹理颜色）。仅在需要让眉毛等更接近 MMD 亮色时才
+# 在 Step1 的滑块中调高。调过高会使整体发白。
 AMBIENT_STRENGTH = 0.0
+PMX_DIR = ""
 
 
 # ============================================================
-# 共通ユーティリティ
+# 通用工具函数
 # ============================================================
 
 def _normalize_path(filepath):
@@ -38,13 +39,13 @@ def _safe_abspath(filepath):
 
 def _set_blend_mode(mat, use_alpha, clip=False):
     """
-    マテリアルの透過モードを設定する。
+    设置材质的透明模式。
     use_alpha=False: 不透明（OPAQUE）
-    use_alpha=True, clip=True : アルファクリップ（二値透過。眉毛など）
-    use_alpha=True, clip=False: 半透明ブレンド（レンズなど）
+    use_alpha=True, clip=True : 阿尔法裁剪（二值透明，用于眉毛等）
+    use_alpha=True, clip=False: 半透明混合（用于镜头等）
 
-    クリップは点描状に透けないので、透過テクスチャ（眉毛・まつ毛）に適する。
-    glTFエクスポート時、クリップは alphaMode:MASK、ブレンドは BLEND になる。
+    裁剪模式不会产生点状透光，适合透明纹理（眉毛、睫毛）。
+    glTF 导出时，裁剪对应 alphaMode:MASK，混合对应 BLEND。
     """
     try:
         if _BLENDER_VERSION < (4, 2, 0):
@@ -57,10 +58,9 @@ def _set_blend_mode(mat, use_alpha, clip=False):
             if hasattr(mat, "shadow_method"):
                 mat.shadow_method = "CLIP" if use_alpha else "OPAQUE"
         else:
-            if hasattr(mat, "surface_render_method"):
-                mat.surface_render_method = "BLENDED" if (use_alpha and not clip) else (
-                    "DITHERED" if use_alpha else "OPAQUE"
-                )
+            # OPAQUE 是默认值（Blender 5.x 的枚举中可能不包含 OPAQUE）
+            if use_alpha and hasattr(mat, "surface_render_method"):
+                mat.surface_render_method = "DITHERED" if clip else "BLENDED"
     except Exception as e:
         print(f"[MMD Exporter] blend mode設定に失敗: {mat.name} / {e}")
 
@@ -83,8 +83,8 @@ def _build_image_cache():
             os.path.basename(img.filepath.replace("\\", "/"))
         )
 
-        if basename and basename not in by_basename:
-            by_basename[basename] = img
+        if basename:
+            by_basename.setdefault(basename, []).append(img)
 
     return by_basename
 
@@ -124,7 +124,9 @@ def _find_or_load_image(filepath, by_basename=None, search_dirs=None):
                 print(f"[MMD Exporter] 画像読み込み失敗: {candidate} / {e}")
 
     if by_basename and basename:
-        return by_basename.get(os.path.normcase(basename))
+        matches = by_basename.get(os.path.normcase(basename))
+        if matches:
+            return matches[0]
 
     return None
 
@@ -139,6 +141,11 @@ def _get_model_search_dirs():
         dirs.append(os.path.join(base, "Textures"))
         dirs.append(os.path.join(base, "texture"))
         dirs.append(os.path.join(base, "Texture"))
+
+    if PMX_DIR:
+        dirs.append(PMX_DIR)
+        dirs.append(os.path.join(PMX_DIR, "textures"))
+        dirs.append(os.path.join(PMX_DIR, "Textures"))
 
     return dirs
 
@@ -156,12 +163,12 @@ def _link_if_possible(tree, output_socket, input_socket):
 
 
 # ============================================================
-# MMDマテリアル判定
+# MMD 材质检测
 # ============================================================
 
 def _is_mmd_material(mat):
     """
-    変換対象のMMDマテリアルか判定する。
+    判断是否为需要转换的 MMD 材质。
     """
     if mat.name.startswith("mmd_edge."):
         return False
@@ -186,7 +193,7 @@ def _is_mmd_material(mat):
 
 
 # ============================================================
-# MMDマテリアル情報取得
+# MMD 材质信息提取
 # ============================================================
 
 _PALE_CACHE = {}
@@ -270,6 +277,7 @@ def _extract_images_from_nodes(mat):
 
     nodes = mat.node_tree.nodes
 
+    # 1) 先查找顶层命名的节点
     base_node = nodes.get("mmd_base_tex")
     if base_node and getattr(base_node, "image", None):
         candidate = base_node.image
@@ -283,7 +291,8 @@ def _extract_images_from_nodes(mat):
     if sphere_node and getattr(sphere_node, "image", None):
         sphere_image = sphere_node.image
 
-    if base_image is None:
+    # 2) 扫描顶层所有 TEX_IMAGE 节点
+    if base_image is None or sphere_image is None:
         sph_image_fallback = None
         candidates = []
 
@@ -320,17 +329,62 @@ def _extract_images_from_nodes(mat):
 
             candidates.append(img)
 
-        if candidates:
+        if candidates and base_image is None:
             base_image = candidates[0]
 
         if sphere_image is None:
             sphere_image = sph_image_fallback
 
+    # 3) 如果还没找到，到 mmd_shader 节点组内部查找
+    if base_image is None or sphere_image is None:
+        mmd_shader = nodes.get("mmd_shader")
+        if mmd_shader and hasattr(mmd_shader, "node_tree") and mmd_shader.node_tree:
+            inside_bases = []
+            inside_spheres = []
+            for internal in mmd_shader.node_tree.nodes:
+                if internal.type != "TEX_IMAGE":
+                    continue
+                img = getattr(internal, "image", None)
+                if not img:
+                    continue
+
+                name_lower = internal.name.lower()
+                img_name_lower = img.name.lower()
+
+                # 跳过 toon
+                if "toon" in name_lower or "toon" in img_name_lower:
+                    continue
+
+                is_sphere = (
+                    "sphere" in name_lower
+                    or "_sph" in name_lower
+                    or "sph" in name_lower  # 更宽松匹配
+                    or "sphere" in img_name_lower
+                    or img_name_lower.endswith(".sph")
+                    or img_name_lower.endswith(".spa")
+                )
+
+                if is_sphere:
+                    inside_spheres.append(img)
+                else:
+                    inside_bases.append(img)
+
+            # 如果命名没有区分出球面，但恰好有2张纹理 → 默认第一张为基础，第二张为球面
+            if not inside_spheres and len(inside_bases) >= 2:
+                # 取第一张为基础，其他为球面（常见mmd_tools布局）
+                inside_spheres = inside_bases[1:]
+                inside_bases = inside_bases[:1]
+
+            if inside_spheres and sphere_image is None:
+                sphere_image = inside_spheres[0]
+            if inside_bases and base_image is None:
+                base_image = inside_bases[0]
+
     if base_image is None:
         tex_node_names = [n.name for n in nodes if n.type == "TEX_IMAGE"]
         print(
-            f"[MMD Exporter] '{mat.name}': テクスチャ画像が見つかりません。"
-            f" TEX_IMAGEノード={tex_node_names if tex_node_names else 'なし'}"
+            f"[MMD Exporter] '{mat.name}': 未找到纹理图像。"
+            f" TEX_IMAGE节点={tex_node_names if tex_node_names else '无'}"
         )
 
     return base_image, sphere_image
@@ -396,7 +450,53 @@ def _extract_mmd_material_info(mat):
 
 
 # ============================================================
-# Principled BSDFマテリアル構築
+# 球面纹理烘焙到基础纹理（GLTF 兼容性）
+# ============================================================
+
+def _bake_sphere_into_base(base_image, sph_image, blend_type="MULTIPLY"):
+    """将球面纹理烘焙到基础纹理中（为了 GLTF 导出兼容性）。
+
+    MMD 的球面纹理使用摄像机空间法线作为 UV 坐标，GLTF 无法表示这种映射。
+    此函数在像素级别将球面纹理预混合到基础纹理中，使得在任何 GLTF 查看器中
+    都能看到球面纹理的效果。
+
+    blend_type: "MULTIPLY"（脸部着色）或 "ADD"（眼睛高光）。
+    直接修改 base_image 的像素数据（保留文件路径，确保 GLTF 导出器能读取）。
+    """
+    import numpy as np
+
+    w, h = base_image.size
+    sw, sh = sph_image.size
+
+    # 获取基础纹理像素 (float32)
+    base_px = np.array(base_image.pixels[:], dtype=np.float32).reshape(h, w, 4)
+
+    # 获取球面纹理像素，尺寸不同时缩放到基础纹理大小
+    if sw == w and sh == h:
+        sph_px = np.array(sph_image.pixels[:], dtype=np.float32).reshape(h, w, 4)
+    else:
+        # 创建临时图像（Blender 自动处理插值缩放）
+        temp = bpy.data.images.new("__bake_temp", sw, sh, alpha=True)
+        temp.pixels[:] = sph_image.pixels[:]
+        temp.scale(w, h)
+        sph_px = np.array(temp.pixels[:], dtype=np.float32).reshape(h, w, 4)
+        bpy.data.images.remove(temp)
+
+    # 执行混合
+    if blend_type == "MULTIPLY":
+        base_px[:, :, :3] *= sph_px[:, :, :3]
+    elif blend_type == "ADD":
+        base_px[:, :, :3] += sph_px[:, :, :3]
+
+    # 钳位到有效范围并写回原图
+    np.clip(base_px[:, :, :3], 0.0, 1.0, out=base_px[:, :, :3])
+    base_image.pixels[:] = base_px.ravel()
+    # 打包到 .blend 文件内，防止 GLTF 导出时从磁盘读取原始文件覆盖修改
+    base_image.pack()
+
+
+# ============================================================
+# Principled BSDF 材质构建
 # ============================================================
 
 def _build_principled_material(
@@ -410,6 +510,7 @@ def _build_principled_material(
     force_double_sided=False,
     ambient=(0.0, 0.0, 0.0),
     ambient_strength=AMBIENT_STRENGTH,
+    is_add_sphere=False,
 ):
     mat.use_nodes = True
     mat.diffuse_color = (diffuse[0], diffuse[1], diffuse[2], alpha)
@@ -452,6 +553,8 @@ def _build_principled_material(
     if metallic_socket:
         metallic_socket.default_value = 0.0
 
+    color_source = None
+
     if image:
         tex = tree.nodes.new(type="ShaderNodeTexImage")
         tex.location = (-500, 100)
@@ -465,53 +568,29 @@ def _build_principled_material(
 
         color_source = tex.outputs.get("Color")
 
+        # MMD 发型等纹理使用 Alpha 通道裁剪形状，透明区域 RGB 为黑色。
+        # 必须将纹理的 Alpha 输出连接到 BSDF 的 Alpha 输入，否则黑色背景会显示出来。
+        tex_alpha = tex.outputs.get("Alpha")
+        if tex_alpha and alpha_socket and _texture_has_transparency(image):
+            tree.links.new(tex_alpha, alpha_socket)
+            # 有透明度的纹理使用 CLIP（裁剪）模式，避免排序问题
+            if _BLENDER_VERSION < (4, 2, 0):
+                mat.blend_method = "CLIP"
+            elif hasattr(mat, "surface_render_method"):
+                try:
+                    mat.surface_render_method = "DITHERED"
+                except Exception:
+                    pass
+
         if sph_image and apply_sphere:
-            sph = tree.nodes.new(type="ShaderNodeTexImage")
-            sph.location = (-300, -200)
-            sph.image = sph_image
-            try:
-                sph.image.colorspace_settings.name = "sRGB"
-            except Exception:
-                pass
+            # 将球面纹理烘焙到基础纹理中（GLTF 兼容性）。
+            # MMD 球面纹理使用摄像机空间法线作为 UV，GLTF 无法表示。
+            # 改为在像素级别预混合（直接修改原图像素，保留文件路径）。
+            blend_type = "ADD" if is_add_sphere else "MULTIPLY"
+            print(f"[MMD Exporter] '{mat.name}': 球面烘焙中 ({blend_type}) ...")
+            _bake_sphere_into_base(image, sph_image, blend_type=blend_type)
 
-            geom = tree.nodes.new(type="ShaderNodeNewGeometry")
-            geom.location = (-1100, -250)
-
-            vec_xform = tree.nodes.new(type="ShaderNodeVectorTransform")
-            vec_xform.location = (-900, -250)
-            vec_xform.vector_type = "NORMAL"
-            vec_xform.convert_from = "WORLD"
-            vec_xform.convert_to = "CAMERA"
-            _link_if_possible(tree, geom.outputs.get("Normal"), vec_xform.inputs.get("Vector"))
-
-            mad = tree.nodes.new(type="ShaderNodeVectorMath")
-            mad.location = (-700, -250)
-            mad.operation = "MULTIPLY_ADD"
-            mad.inputs[1].default_value = (0.5, 0.5, 0.5)
-            mad.inputs[2].default_value = (0.5, 0.5, 0.5)
-            _link_if_possible(tree, vec_xform.outputs.get("Vector"), mad.inputs[0])
-            _link_if_possible(tree, mad.outputs.get("Vector"), sph.inputs.get("Vector"))
-
-            try:
-                mix = tree.nodes.new(type="ShaderNodeMix")
-                mix.location = (-50, 50)
-                mix.data_type = "RGBA"
-                mix.factor_mode = "UNIFORM"
-                mix.blend_type = "MULTIPLY"
-                if "Factor" in mix.inputs:
-                    mix.inputs["Factor"].default_value = 1.0
-                _link_if_possible(tree, tex.outputs.get("Color"), mix.inputs.get("A"))
-                _link_if_possible(tree, sph.outputs.get("Color"), mix.inputs.get("B"))
-                color_source = mix.outputs.get("Result")
-            except Exception:
-                mix = tree.nodes.new(type="ShaderNodeMixRGB")
-                mix.location = (-50, 50)
-                mix.blend_type = "MULTIPLY"
-                mix.inputs[0].default_value = 1.0
-                _link_if_possible(tree, tex.outputs.get("Color"), mix.inputs[1])
-                _link_if_possible(tree, sph.outputs.get("Color"), mix.inputs[2])
-                color_source = mix.outputs.get("Color")
-
+    if color_source is not None:
         if ambient and max(ambient) > 0.001 and ambient_strength > 0.001:
             add = tree.nodes.new(type="ShaderNodeMixRGB")
             add.location = (60, 200)
@@ -531,7 +610,7 @@ def _build_principled_material(
 
 
 # ============================================================
-# Material conversion operator
+# 材质转换操作符
 # ============================================================
 
 class MMD_OT_ConvertMaterials(Operator):
@@ -545,7 +624,7 @@ class MMD_OT_ConvertMaterials(Operator):
         description="スフィアマップ（乗算）の適用方法",
         items=[
             ("NONE", "適用しない（推奨）", "スフィアを一切使わない。base画像のみ。glTF出力に最も安全"),
-            ("AUTO", "自動（眼球のみ）", "眼球系マテリアル（名前にeye/目/瞳等を含み、base画像が白っぽい）にのみ適用"),
+            ("AUTO", "自動", "MULTIPLY（乗算）球面を全マテリアルに適用（顔の輪郭を滑らかに）。ADD（加算）球面は眼球のみ"),
             ("ALL", "常に適用", "全マテリアルに適用。MMD本来寄りだが暗く濁る場合がある"),
         ],
         default="NONE",
@@ -595,38 +674,51 @@ class MMD_OT_ConvertMaterials(Operator):
                 missing_textures.append(texture_path)
 
             is_mult_sphere = sphere_texture_type in ("1", "MULT", "Multiply", "multiply")
+            is_add_sphere = sphere_texture_type in ("2", "ADD", "Add", "add")
             if node_sphere is not None:
                 sph_image = node_sphere
-            elif sphere_path and is_mult_sphere:
+                # 节点树中确实存在球面纹理 → 如果类型未设置则默认 MULTIPLY
+                if not is_mult_sphere and not is_add_sphere:
+                    is_mult_sphere = True
+            elif sphere_path:
                 sph_image = _find_or_load_image(sphere_path, by_basename=by_basename, search_dirs=search_dirs)
+                if sph_image and not is_mult_sphere and not is_add_sphere:
+                    is_mult_sphere = True
 
             if self.sphere_mode == "ALL":
                 apply_sphere = sph_image is not None
             elif self.sphere_mode == "NONE":
                 apply_sphere = False
             else:
-                apply_sphere = (
-                    sph_image is not None
-                    and _looks_like_eye_material(mat, image)
-                    and _is_pale_base_image(image)
-                )
-                if apply_sphere:
-                    print(f"[MMD Exporter] '{mat.name}': 眼球と判定しスフィア適用")
+                # AUTO: MULTIPLY 球面纹理（脸部着色）应用到所有材质，
+                #       ADD 球面纹理（高光）只应用到眼球材质。
+                if sph_image is None:
+                    apply_sphere = False
+                elif is_mult_sphere:
+                    apply_sphere = True
+                    print(f"[MMD Exporter] '{mat.name}': MULT球面适用 (自动)")
+                elif _looks_like_eye_material(mat, image) and _is_pale_base_image(image):
+                    apply_sphere = True
+                    print(f"[MMD Exporter] '{mat.name}': ADD球面适用 (眼球)")
+                else:
+                    apply_sphere = False
+                    print(f"[MMD Exporter] '{mat.name}': 球面跳过 (AUTO未匹配)")
 
             _build_principled_material(
                 mat, image=image, diffuse=diffuse, alpha=alpha,
                 is_double_sided=is_double_sided, sph_image=sph_image,
                 apply_sphere=apply_sphere, force_double_sided=self.force_double_sided,
                 ambient=ambient, ambient_strength=self.ambient_strength,
+                is_add_sphere=is_add_sphere,
             )
             converted += 1
 
         if missing_textures:
             for path in missing_textures[:10]:
-                print(f"[MMD Exporter] 未検出テクスチャ: {path}")
-            self.report({"WARNING"}, f"マテリアル変換完了: {converted}件 / スキップ: {skipped}件 / 未検出テクスチャ: {len(missing_textures)}件")
+                print(f"[MMD Exporter] 未加载纹理: {path}")
+            self.report({"WARNING"}, f"材质转换完成: {converted}个 / 跳过: {skipped}个 / 未加载纹理: {len(missing_textures)}个")
         else:
-            self.report({"INFO"}, f"マテリアル変換完了: {converted}件 / スキップ: {skipped}件")
+            self.report({"INFO"}, f"材质转换完成: {converted}个 / 跳过: {skipped}个")
 
         return {"FINISHED"}
 
@@ -635,8 +727,8 @@ def _run_convert_materials(by_basename, search_dirs, sphere_mode="NONE",
                            force_double_sided=False,
                            ambient_strength=AMBIENT_STRENGTH):
     """
-    bpy.ops を経由せずマテリアル変換を直接実行する内部関数。
-    エクスポートダイアログのコンテキスト問題を回避するために使用。
+    不经过 bpy.ops 直接执行材质转换的内部函数。
+    用于避免导出对话框的上下文问题。
     """
     _PALE_CACHE.clear()
     _ALPHA_CACHE.clear()
@@ -657,25 +749,36 @@ def _run_convert_materials(by_basename, search_dirs, sphere_mode="NONE",
             image = _find_or_load_image(texture_path, by_basename=by_basename, search_dirs=search_dirs)
 
         is_mult_sphere = sphere_texture_type in ("1", "MULT", "Multiply", "multiply")
+        is_add_sphere = sphere_texture_type in ("2", "ADD", "Add", "add")
         if node_sphere is not None:
             sph_image = node_sphere
-        elif sphere_path and is_mult_sphere:
+            if not is_mult_sphere and not is_add_sphere:
+                is_mult_sphere = True
+        elif sphere_path:
             sph_image = _find_or_load_image(sphere_path, by_basename=by_basename, search_dirs=search_dirs)
+            if sph_image and not is_mult_sphere and not is_add_sphere:
+                is_mult_sphere = True
 
         if sphere_mode == "ALL":
             apply_sphere = sph_image is not None
         elif sphere_mode == "NONE":
             apply_sphere = False
         else:
-            apply_sphere = (
-                sph_image is not None
-                and _looks_like_eye_material(mat, image)
-                and _is_pale_base_image(image)
-            )
+            # AUTO: MULTIPLY 球面纹理（脸部着色）应用到所有材质，
+            #       ADD 球面纹理（高光）只应用到眼球材质。
+            if sph_image is None:
+                apply_sphere = False
+            elif is_mult_sphere:
+                apply_sphere = True
+            elif _looks_like_eye_material(mat, image) and _is_pale_base_image(image):
+                apply_sphere = True
+            else:
+                apply_sphere = False
 
         _build_principled_material(
             mat, image=image, diffuse=diffuse, alpha=alpha,
             is_double_sided=is_double_sided, sph_image=sph_image,
             apply_sphere=apply_sphere, force_double_sided=force_double_sided,
             ambient=ambient, ambient_strength=ambient_strength,
+            is_add_sphere=is_add_sphere,
         )

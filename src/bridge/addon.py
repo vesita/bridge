@@ -1,15 +1,13 @@
 """
-Blender add-on: MMD → glTF Exporter.
+Blender 插件：MMD → glTF 导出器。
 
-Converts MMD materials to Principled BSDF, renames bones to English,
-and exports as GLB. Thin entry point — logic lives in sibling _*.py modules.
+将 MMD 材质转换为 Principled BSDF，将骨骼重命名为英文，
+并导出为 GLB。轻量入口 — 逻辑实现在同级 _*.py 模块中。
 
-Install via Blender Preferences → Add-ons → Install…
-(select this file: src/bridge/addon.py)
-or use in headless mode via blender_runner.py.
+安装方式：Blender 偏好设置 → 插件 → 安装…
+（选择本文件：src/bridge/addon.py）
+或通过 blender_runner.py 在无头模式下使用。
 """
-
-# @ https://github.com/masaka1024/mmd-to-gltf-exporter
 
 bl_info = {
     "name": "MMD to glTF Exporter",
@@ -38,13 +36,13 @@ classes = [
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
-    print("MMD to glTF Exporter v2.5.4: 有効化されました")
+    print("MMD to glTF Exporter v2.5.4: 已启用")
 
 
 def unregister():
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
-    print("MMD to glTF Exporter v2.5.4: 無効化されました")
+    print("MMD to glTF Exporter v2.5.4: 已禁用")
 
 
 if __name__ == "__main__":

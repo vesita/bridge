@@ -1,6 +1,8 @@
 """
-Allow `python -m bridge` to run the orchestrator CLI.
+允许 `python -m bridge` 运行编排器 CLI。
 """
+import sys
+
 from bridge.cli import main
 
-main()
+sys.exit(main())

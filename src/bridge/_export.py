@@ -1,5 +1,5 @@
 """
-MMD → GLB export — pre-processing, export operator, sidebar panel.
+MMD → GLB 导出 — 预处理、导出操作符、侧边栏面板。
 """
 
 import bpy
@@ -13,9 +13,8 @@ from ._materials import (
     _get_model_search_dirs,
 )
 
-# export_apply を False とすることで元のトランスフォーム（回転・スケール）を
-# そのまま維持する。True にするとモデル初期のスケールがメッシュに焼き込まれ、
-# デフォルトの拡大率が失われるため False をデフォルトとする。
+# export_apply 设为 False 可以保留原始变换（旋转/缩放）。
+# 设为 True 会将模型初始缩放烘焙到网格中，导致默认缩放丢失，因此默认设为 False。
 _GLTF_EXPORT_PARAMS = {
     "export_format": "GLB",
     "use_visible": True,
@@ -39,7 +38,7 @@ _GLTF_EXPORT_PARAMS_FALLBACK = {
 
 
 # ============================================================
-# エクスポート前処理
+# 导出预处理
 # ============================================================
 
 def _hide_mmd_internal_objects():
@@ -51,7 +50,7 @@ def _hide_mmd_internal_objects():
             obj.hide_viewport = True
             obj.hide_render = True
 
-    print(f"[MMD Exporter] 内部オブジェクトを一時非表示: {len(hidden_states)}件")
+    print(f"[MMD Exporter] 临时隐藏内部对象: {len(hidden_states)}个")
     return hidden_states
 
 
@@ -76,7 +75,7 @@ def _mute_sdef_shape_keys():
                 muted_states.append((key_block, key_block.mute))
                 key_block.mute = True
 
-    print(f"[MMD Exporter] SDEFシェイプキーを一時ミュート: {len(muted_states)}件")
+    print(f"[MMD Exporter] 临时静音 SDEF 形态键: {len(muted_states)}个")
     return muted_states
 
 
@@ -89,7 +88,7 @@ def _restore_sdef_shape_keys(muted_states):
 
 
 # ============================================================
-# GLBエクスポート
+# GLB 导出
 # ============================================================
 
 class MMD_OT_ExportGLTF(Operator, ExportHelper):
@@ -150,18 +149,18 @@ class MMD_OT_ExportGLTF(Operator, ExportHelper):
                 bpy.ops.export_scene.gltf(**fallback_params)
 
         except Exception as e:
-            self.report({"ERROR"}, f"GLBエクスポート失敗: {e}")
+            self.report({"ERROR"}, f"GLB导出失败: {e}")
             return {"CANCELLED"}
         finally:
             _restore_sdef_shape_keys(muted_states)
             _restore_hidden_objects(hidden_states)
 
-        self.report({"INFO"}, f"GLBエクスポート完了: {filepath}")
+        self.report({"INFO"}, f"GLB导出完成: {filepath}")
         return {"FINISHED"}
 
 
 # ============================================================
-# サイドバーパネル
+# 侧边栏面板
 # ============================================================
 
 class MMD_PT_ExporterPanel(Panel):
